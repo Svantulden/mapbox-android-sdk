@@ -1,13 +1,13 @@
 package com.mapbox.mapboxsdk.offline;
 
+import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.text.TextUtils;
-import android.util.Log;
 import com.mapbox.mapboxsdk.constants.MapboxConstants;
 import com.mapbox.mapboxsdk.exceptions.OfflineDatabaseException;
-import java.util.Date;
+import java.util.Map;
 
 public class OfflineMapDatabase implements MapboxConstants {
 
@@ -24,7 +24,12 @@ public class OfflineMapDatabase implements MapboxConstants {
     private RasterImageQuality imageQuality;
     private String path;
     private boolean invalid;
-    private boolean initializedProperly = false;
+
+    private final Object lock;
+
+    {
+        lock = new Object();
+    }
 
     /**
      * Default Constructor
@@ -47,55 +52,62 @@ public class OfflineMapDatabase implements MapboxConstants {
         this.mapID = mapID;
     }
 
+    public OfflineMapDatabase(Context context, String mapID, Map<String, String> metadata) {
+        super();
+        this.context = context;
+        this.mapID = mapID;
+        updateMetadata(metadata);
+    }
+
     public String getUniqueID() {
-        return uniqueID;
+        synchronized (lock) {
+            return uniqueID;
+        }
     }
 
     public String getMapID() {
-        return mapID;
+        synchronized (lock) {
+            return mapID;
+        }
     }
 
     public String getPath() {
-        return path;
+        synchronized (lock) {
+            return path;
+        }
     }
 
     public RasterImageQuality getImageQuality() {
-        return imageQuality;
+        synchronized (lock) {
+            return imageQuality;
+        }
+    }
+
+    public boolean includesMetadata() {
+        synchronized (lock) {
+            return includesMetadata;
+        }
+    }
+
+    public boolean includesMarkers() {
+        synchronized (lock) {
+            return includesMarkers;
+        }
     }
 
     public boolean initializeDatabase() {
-
-        String uniqueID = sqliteMetadataForName("uniqueID");
-        String mapID = sqliteMetadataForName("mapID");
-        String includesMetadata = sqliteMetadataForName("includesMetadata");
-        String includesMarkers = sqliteMetadataForName("includesMarkers");
-        String imageQuality = sqliteMetadataForName("imageQuality");
-
-        if (TextUtils.isEmpty(uniqueID)) {
-            uniqueID = String.format(MAPBOX_LOCALE, "%s-%d", mapID, new Date().getTime() / 1000L);
-        }
-
-        if (!TextUtils.isEmpty(mapID) && !TextUtils.isEmpty(includesMetadata) && !TextUtils.isEmpty(includesMarkers) && !TextUtils.isEmpty(imageQuality)) {
-            // Reaching this point means that the specified database file at path pointed to an sqlite file which had
-            // all the required values in its metadata table. That means the file passed the test for being a valid
-            // offline map database.
-            //
-            this.uniqueID = uniqueID;
-            this.mapID = mapID;
-            this.includesMetadata = "YES".equalsIgnoreCase(includesMetadata);
-            this.includesMarkers = "YES".equalsIgnoreCase(includesMarkers);
-
-            this.imageQuality = RasterImageQuality.getEnumForValue(Integer.parseInt(imageQuality));
-
+        synchronized (lock) {
+            if (!refreshMetadata()) {
+                return false;
+            }
             SQLiteDatabase db = database();
+            if (db == null) {
+                return false;
+            }
             this.path = db.getPath();
-
-            this.initializedProperly = true;
-        } else {
-            // Reaching this point means the file at path isn't a valid offline map database, so we can't use it.
-            Log.w(TAG, "Invalid offline map database.  Can't be used.");
+            closeDatabase();
+            return true;
         }
-        return initializedProperly;
     }
 
     public byte[] dataForURL(String url) throws OfflineDatabaseException {
@@ -110,14 +122,13 @@ public class OfflineMapDatabase implements MapboxConstants {
     }
 
     public void invalidate() {
-        this.invalid = false;
+        synchronized (lock) {
+            this.invalid = true;
+            closeDatabase();
+        }
     }
 
     public String sqliteMetadataForName(String name) {
-        if (mapID == null) {
-            return null;
-        }
-
         SQLiteDatabase db = database();
         if (db == null) {
             return null;
@@ -138,10 +149,70 @@ public class OfflineMapDatabase implements MapboxConstants {
         return res;
     }
 
-    public byte[] sqliteDataForURL(String url) {
-        if (mapID == null) {
-            return null;
+    public void updateMetadata(Map<String, String> metadata) {
+        SQLiteDatabase db = database();
+        if (db == null)
+            return;
+
+        db.beginTransaction();
+        for (String key : metadata.keySet()) {
+            ContentValues cv = new ContentValues();
+            cv.put(OfflineDatabaseHandler.FIELD_METADATA_NAME, key);
+            cv.put(OfflineDatabaseHandler.FIELD_METADATA_VALUE, metadata.get(key));
+            db.replace(OfflineDatabaseHandler.TABLE_METADATA, null, cv);
         }
+        db.setTransactionSuccessful();
+        db.endTransaction();
+
+        refreshMetadata();
+    }
+
+    private boolean refreshMetadata() {
+        synchronized (lock) {
+            String uniqueID = sqliteMetadataForName("uniqueID");
+            String mapID = sqliteMetadataForName("mapID");
+            String includesMetadata = sqliteMetadataForName("includesMetadata");
+            String includesMarkers = sqliteMetadataForName("includesMarkers");
+            String imageQuality = sqliteMetadataForName("imageQuality");
+
+            if (TextUtils.isEmpty(uniqueID) || TextUtils.isEmpty(mapID) || TextUtils.isEmpty(includesMetadata) ||
+                    TextUtils.isEmpty(includesMarkers) || TextUtils.isEmpty(imageQuality)) {
+                return false;
+            }
+
+            this.uniqueID = uniqueID;
+            this.mapID = mapID;
+            this.includesMetadata = "YES".equalsIgnoreCase(includesMetadata);
+            this.includesMarkers = "YES".equalsIgnoreCase(includesMarkers);
+            this.imageQuality = RasterImageQuality.getEnumForValue(Integer.parseInt(imageQuality));
+
+            return true;
+        }
+    }
+
+    public void setURLData(String url, byte[] data) {
+        setURLData(url, data, 200);
+    }
+
+    public void setURLData(String url, byte[] data, int status) {
+        SQLiteDatabase db = database();
+        if (db == null) {
+            return;
+        }
+        db.beginTransaction();
+
+//      String query2 = "INSERT INTO data(value) VALUES(?);";
+        ContentValues values = new ContentValues();
+        values.put(OfflineDatabaseHandler.FIELD_RESOURCES_URL, url);
+        values.put(OfflineDatabaseHandler.FIELD_RESOURCES_DATA, data);
+        values.put(OfflineDatabaseHandler.FIELD_RESOURCES_STATUS, status);
+        db.replace(OfflineDatabaseHandler.TABLE_RESOURCES, null, values);
+
+        db.setTransactionSuccessful();
+        db.endTransaction();
+    }
+
+    public byte[] sqliteDataForURL(String url) {
         SQLiteDatabase db = database();
         if (db == null) {
             return null;
@@ -162,20 +233,58 @@ public class OfflineMapDatabase implements MapboxConstants {
         return res;
     }
 
-    private SQLiteDatabase database() {
+    public boolean isURLAlreadyInDatabase(String url) {
+        SQLiteDatabase db = database();
         if (db == null) {
-            db = OfflineDatabaseManager.getOfflineDatabaseManager(context).getOfflineDatabaseHandlerForMapId(mapID).getReadableDatabase();
+            return false;
         }
-        if (!db.isOpen()) {
-            db = null;
+
+        String query = "SELECT COUNT(*) as count FROM " + OfflineDatabaseHandler.TABLE_RESOURCES + " WHERE " + OfflineDatabaseHandler.FIELD_RESOURCES_URL + " =?;";
+        String[] selectionArgs = new String[] { url };
+        Cursor result = db.rawQuery(query, selectionArgs);
+        boolean alreadyDownloaded = false;
+        if (result.moveToNext()) {
+            int count = result.getInt(result.getColumnIndex("count"));
+            alreadyDownloaded = count == 1;
         }
-        return db;
+        result.close();
+        return alreadyDownloaded;
+    }
+
+    public void deleteDataForURL(String url) {
+        SQLiteDatabase db = database();
+        if (db == null) {
+            return;
+        }
+
+        String[] whereArgs = new String[] { url };
+        db.delete(OfflineDatabaseHandler.TABLE_RESOURCES, OfflineDatabaseHandler.FIELD_RESOURCES_URL + " = ?", whereArgs);
+    }
+
+    private SQLiteDatabase database() {
+        synchronized (lock) {
+            if (invalid || mapID == null) {
+                return null;
+            }
+
+            if (db != null && !db.isOpen()) {
+                db = null;
+            }
+
+            if (db == null) {
+                db = OfflineDatabaseManager.getOfflineDatabaseManager(context).getOfflineDatabaseHandlerForMapId(mapID).getWritableDatabase();
+            }
+
+            return db;
+        }
     }
 
     public void closeDatabase() {
-        if (db != null && db.isOpen()) {
-            db.close();
+        synchronized (lock) {
+            if (db != null && db.isOpen()) {
+                db.close();
+            }
+            db = null;
         }
-        db = null;
     }
 }

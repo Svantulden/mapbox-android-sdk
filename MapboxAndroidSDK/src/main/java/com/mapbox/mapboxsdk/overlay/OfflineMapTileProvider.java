@@ -17,11 +17,16 @@ public class OfflineMapTileProvider extends MapTileLayerBase implements MapboxCo
 
     private static final String TAG = "OfflineMapTileProvider";
 
-    private OfflineMapDatabase offlineMapDatabase = null;
+    private OfflineMapDatabase[] offlineMapDatabases;
 
     public OfflineMapTileProvider(Context context, OfflineMapDatabase offlineMapDatabase) {
         super(context, null);
-        this.offlineMapDatabase = offlineMapDatabase;
+        this.offlineMapDatabases = new OfflineMapDatabase[] { offlineMapDatabase };
+    }
+
+    public OfflineMapTileProvider(Context context, OfflineMapDatabase[] databases) {
+        super(context, null);
+        this.offlineMapDatabases = databases;
     }
 
     @Override
@@ -33,8 +38,13 @@ public class OfflineMapTileProvider extends MapTileLayerBase implements MapboxCo
             }
 
             // Build URL to match url in database
-            String url = MapboxUtils.getMapTileURL(context, offlineMapDatabase.getMapID(), pTile.getZ(), pTile.getX(), pTile.getY(), offlineMapDatabase.getImageQuality());
-            byte[] data = offlineMapDatabase.dataForURL(url);
+            byte[] data = null;
+            for (OfflineMapDatabase offlineMapDatabase : offlineMapDatabases) {
+                String url = MapboxUtils.getMapTileURL(context, offlineMapDatabase.getMapID(), pTile.getZ(), pTile.getX(), pTile.getY(), offlineMapDatabase.getImageQuality());
+                data = offlineMapDatabase.dataForURL(url);
+                if (data != null)
+                    break;
+            }
 
             if (data == null || data.length == 0) {
                 // No data found, just return null so that default gray screen is displayed.
@@ -56,7 +66,7 @@ public class OfflineMapTileProvider extends MapTileLayerBase implements MapboxCo
         if (getTileSource() != null) {
             getTileSource().detach();
         }
-        if (offlineMapDatabase != null) {
+        for (OfflineMapDatabase offlineMapDatabase : offlineMapDatabases) {
             offlineMapDatabase.closeDatabase();
         }
     }

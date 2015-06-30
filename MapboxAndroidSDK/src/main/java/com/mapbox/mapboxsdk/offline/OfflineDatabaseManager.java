@@ -31,38 +31,8 @@ public class OfflineDatabaseManager {
             return databaseHandlers.get(mapId);
         }
 
-        OfflineDatabaseHandler dbh = new OfflineDatabaseHandler(context, mapId.toLowerCase() + "-PARTIAL");
+        OfflineDatabaseHandler dbh = new OfflineDatabaseHandler(context, mapId.toLowerCase());
         databaseHandlers.put(mapId.toLowerCase(), dbh);
         return dbh;
-    }
-
-    public OfflineDatabaseHandler getOfflineDatabaseHandlerForMapId(String mapId, boolean fromFileSystem) {
-        if (!fromFileSystem) {
-            return getOfflineDatabaseHandlerForMapId(mapId);
-        }
-
-        String key = mapId.toLowerCase();
-        if (databaseHandlers.containsKey(key)) {
-            return databaseHandlers.get(key);
-        }
-
-        OfflineDatabaseHandler dbh = new OfflineDatabaseHandler(context, key);
-        databaseHandlers.put(key, dbh);
-        return dbh;
-    }
-
-    public boolean switchHandlerFromPartialToRegular(String mapId) {
-        if (TextUtils.isEmpty(mapId)) {
-            return false;
-        }
-        String key = mapId.toLowerCase();
-        if (!databaseHandlers.containsKey(key)) {
-            return false;
-        }
-
-        OfflineDatabaseHandler dbh = new OfflineDatabaseHandler(context, key);
-        databaseHandlers.remove(key);
-        databaseHandlers.put(key, dbh);
-        return true;
     }
 }
